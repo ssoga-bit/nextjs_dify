@@ -1,103 +1,205 @@
-import Image from "next/image";
+"use client"
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+
+type JobStatusResponse = {
+  jobId: string
+  runId: string
+  status: string
+  result: unknown
+  error: unknown
+  createdAt: number | null
+  finishedAt: number | null
+  elapsedTime: number | null
+}
+
+type LogPayload = {
+  status?: string
+  logs?: unknown[]
+  error?: unknown
+}
 
 export default function Home() {
-  return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+  const [prompt, setPrompt] = useState("")
+  const [jobId, setJobId] = useState("")
+  const [runId, setRunId] = useState("")
+  const [status, setStatus] = useState("")
+  const [logs, setLogs] = useState<string[]>([])
+  const [error, setError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+  const eventSourceRef = useRef<EventSource | null>(null)
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
+  useEffect(() => {
+    return () => {
+      eventSourceRef.current?.close()
+    }
+  }, [])
+
+  const canStart = useMemo(() => prompt.trim().length > 0 && !loading, [prompt, loading])
+
+  const startJob = useCallback(async () => {
+    if (!canStart) return
+
+    eventSourceRef.current?.close()
+    setLoading(true)
+    setError(null)
+    setLogs([])
+    setStatus("running")
+    setJobId("")
+    setRunId("")
+
+    try {
+      const response = await fetch("/api/jobs/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ inputs: { input_text: prompt } }),
+      })
+
+      if (!response.ok) {
+        throw new Error(`Failed to start job (${response.status})`)
+      }
+
+      const data: { jobId: string; runId: string } = await response.json()
+      setJobId(data.jobId)
+      setRunId(data.runId)
+    } catch (err) {
+      setStatus("")
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setLoading(false)
+    }
+  }, [canStart, prompt])
+
+  const checkStatus = useCallback(async () => {
+    if (!jobId) return
+    setError(null)
+
+    try {
+      const response = await fetch(`/api/jobs/${jobId}/status`)
+      if (!response.ok) {
+        throw new Error(`Status request failed (${response.status})`)
+      }
+      const data: JobStatusResponse = await response.json()
+      setStatus(data.status)
+      if (data.error) {
+        setError(typeof data.error === "string" ? data.error : JSON.stringify(data.error))
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
+  }, [jobId])
+
+  const subscribeLogs = useCallback(() => {
+    if (!jobId || !runId) return
+
+    eventSourceRef.current?.close()
+    const source = new EventSource(`/api/logs/stream?jobId=${encodeURIComponent(jobId)}&runId=${encodeURIComponent(runId)}`)
+    eventSourceRef.current = source
+
+    source.onmessage = (event) => {
+      try {
+        const payload: LogPayload = JSON.parse(event.data)
+        if (payload.status) setStatus(payload.status)
+        if (payload.error) {
+          setError(typeof payload.error === "string" ? payload.error : JSON.stringify(payload.error))
+        }
+        if (Array.isArray(payload.logs)) {
+          setLogs((prev) => [...prev, ...payload.logs.map((item) => JSON.stringify(item))])
+        }
+        if (payload.status && payload.status !== "running") {
+          source.close()
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err))
+      }
+    }
+
+    source.onerror = () => {
+      source.close()
+    }
+  }, [jobId, runId])
+
+  return (
+    <main className="min-h-screen bg-slate-50 text-slate-900">
+      <div className="mx-auto flex max-w-3xl flex-col gap-6 px-6 py-12">
+        <header>
+          <h1 className="text-3xl font-semibold">Dify Long-Run Workflow Demo</h1>
+          <p className="mt-2 text-sm text-slate-600">
+            フォーム送信で Dify ワークフローを起動し、ブラウザを閉じても完走するバックグラウンド実行を検証します。
+          </p>
+        </header>
+
+        <section className="flex flex-col gap-4 rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+          <label className="flex flex-col gap-2 text-sm font-medium text-slate-700">
+            プロンプト
+            <textarea
+              className="w-full resize-y rounded border border-slate-300 px-3 py-2 text-base shadow-sm outline-none focus:border-slate-500"
+              rows={4}
+              placeholder="ワークフローに渡したい入力を記述してください"
+              value={prompt}
+              onChange={(event) => setPrompt(event.target.value)}
             />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
-        </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
-    </div>
-  );
+          </label>
+
+          <div className="flex flex-wrap gap-3 text-sm">
+            <button
+              type="button"
+              onClick={startJob}
+              disabled={!canStart}
+              className="rounded bg-slate-900 px-4 py-2 font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+            >
+              {loading ? "Starting..." : "Start"}
+            </button>
+            <button
+              type="button"
+              onClick={checkStatus}
+              disabled={!jobId}
+              className="rounded border border-slate-300 px-4 py-2 font-semibold text-slate-700 transition hover:border-slate-400 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Status
+            </button>
+            <button
+              type="button"
+              onClick={subscribeLogs}
+              disabled={!runId}
+              className="rounded border border-slate-300 px-4 py-2 font-semibold text-slate-700 transition hover:border-slate-400 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              ログ表示 (SSE)
+            </button>
+          </div>
+
+          <dl className="grid grid-cols-1 gap-3 text-sm text-slate-600 sm:grid-cols-2">
+            <div>
+              <dt className="font-semibold text-slate-700">jobId</dt>
+              <dd className="break-all font-mono text-xs text-slate-600">{jobId || "-"}</dd>
+            </div>
+            <div>
+              <dt className="font-semibold text-slate-700">runId</dt>
+              <dd className="break-all font-mono text-xs text-slate-600">{runId || "-"}</dd>
+            </div>
+            <div>
+              <dt className="font-semibold text-slate-700">status</dt>
+              <dd className="text-base font-semibold text-slate-900">{status || "-"}</dd>
+            </div>
+            {error && (
+              <div className="sm:col-span-2">
+                <dt className="font-semibold text-red-600">error</dt>
+                <dd className="break-all rounded bg-red-50 p-2 text-xs text-red-700">{error}</dd>
+              </div>
+            )}
+          </dl>
+        </section>
+
+        <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+          <h2 className="text-lg font-semibold text-slate-800">Workflow Logs</h2>
+          <p className="mt-1 text-xs text-slate-500">
+            Dify API のログ検索結果を 2 秒間隔でポーリングし、SSE 経由で新着のみを追記します。
+          </p>
+          <pre className="mt-4 max-h-80 overflow-auto rounded bg-slate-900 p-4 text-xs text-slate-100">
+            {logs.length ? logs.join("\n\n") : "ログはまだありません"}
+          </pre>
+        </section>
+      </div>
+    </main>
+  )
 }
