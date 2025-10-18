@@ -21,6 +21,8 @@ type CallbackPayload = {
 
 export async function POST(req: NextRequest) {
   const secretHeader = req.headers.get('x-callback-secret')
+  console.log('[callback] header secret length', secretHeader?.length ?? 0)
+  console.log('[callback] env secret length', CALLBACK_SECRET.length)
   if (!secretHeader || secretHeader !== CALLBACK_SECRET) {
     return new NextResponse('unauthorized', { status: 401 })
   }

@@ -104,7 +104,10 @@ export default function Home() {
           setError(typeof payload.error === "string" ? payload.error : JSON.stringify(payload.error))
         }
         if (Array.isArray(payload.logs)) {
-          setLogs((prev) => [...prev, ...payload.logs.map((item) => JSON.stringify(item))])
+          const formattedLogs = payload.logs.map((item) => JSON.stringify(item))
+          if (formattedLogs.length > 0) {
+            setLogs((prev) => [...prev, ...formattedLogs])
+          }
         }
         if (payload.status && payload.status !== "running") {
           source.close()
