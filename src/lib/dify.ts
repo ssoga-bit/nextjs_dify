@@ -76,7 +76,7 @@ export async function startWorkflowStreaming(inputs: StartWorkflowInput) {
 }
 
 export async function fetchRunDetail(runId: string) {
-  const res = await fetch(`${getApiUrl()}/workflows/runs/${runId}`, {
+  const res = await fetch(`${getApiUrl()}/workflows/run/${runId}`, {
     method: 'GET',
     headers: buildHeaders(),
     cache: 'no-store',
